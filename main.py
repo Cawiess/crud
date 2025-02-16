@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QInputDialog, QDialog, QGroupBox, QShortcut, QMessageBox
 )
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QPainterPath, QPalette, QFont, QKeySequence
-from PyQt5.QtCore import Qt, QPointF, QLineF
+from PyQt5.QtCore import Qt, QPointF, QLineF, QTimer, QVariantAnimation
 
 # =============================================================================
 # DocumentHandler: Extracts persons and metadata from a PDF document.
@@ -421,6 +421,7 @@ class GraphWidget(QGraphicsView):
         super().__init__(parent)
         self.setRenderHint(QPainter.Antialiasing)
         self.setScene(QGraphicsScene(self))
+        # Use RubberBandDrag for selection by default.
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.node_items: Dict[str, NodeItem] = {}
         self.edge_items: List[EdgeItem] = []
@@ -432,6 +433,10 @@ class GraphWidget(QGraphicsView):
         # For multi-node edge creation.
         self.edge_creation_sources: List[NodeItem] = []
         self.temp_edge_items: List[QGraphicsPathItem] = []
+        # Store animations to prevent garbage collection.
+        self.layoutAnimations = []
+        # For panning with the middle mouse button.
+        self._pan_start = None
 
     def record_state(self):
         if self.current_graph is None:
@@ -529,11 +534,11 @@ class GraphWidget(QGraphicsView):
             self.on_refresh_callback()
 
     def organize_layout(self):
-        """Apply a simple force-directed layout (Fruchterman-Reingold style)."""
+        """Apply a simple force-directed layout (Fruchterman-Reingold style)
+        with smooth animation using QVariantAnimation."""
         if not self.node_items or self.current_graph is None:
             return
 
-        # Define simulation parameters.
         width = self.viewport().width()
         height = self.viewport().height()
         area = width * height
@@ -542,13 +547,12 @@ class GraphWidget(QGraphicsView):
         iterations = 50
         dt = 0.1
 
-        # Initialize positions.
+        # Compute new positions.
         positions = {node_id: self.node_items[node_id].pos() for node_id in self.node_items}
-        # Simple force simulation.
         for _ in range(iterations):
             forces = {node_id: QPointF(0, 0) for node_id in self.node_items}
 
-            # Repulsive forces between nodes.
+            # Repulsive forces.
             for id1, pos1 in positions.items():
                 for id2, pos2 in positions.items():
                     if id1 == id2:
@@ -585,10 +589,19 @@ class GraphWidget(QGraphicsView):
                     disp = QPointF(disp.x() / disp_length * max_disp, disp.y() / disp_length * max_disp)
                 positions[node_id] += QPointF(disp.x() * dt, disp.y() * dt)
 
-        # Apply new positions.
-        for node_id, pos in positions.items():
-            self.node_items[node_id].setPos(pos)
-        self.scene().update()
+        # Animate each node smoothly from its current position to the new position.
+        self.layoutAnimations = []
+        duration = 500  # milliseconds
+        for node_id, new_pos in positions.items():
+            node_item = self.node_items[node_id]
+            animation = QVariantAnimation(self)
+            animation.setDuration(duration)
+            animation.setStartValue(node_item.pos())
+            animation.setEndValue(new_pos)
+            animation.valueChanged.connect(lambda value, item=node_item: item.setPos(value))
+            animation.start()
+            self.layoutAnimations.append(animation)
+        QTimer.singleShot(duration + 50, lambda: self.layoutAnimations.clear())
 
     def wheelEvent(self, event):
         """Zoom in/out using the mouse wheel."""
@@ -601,6 +614,12 @@ class GraphWidget(QGraphicsView):
         self.scale(factor, factor)
 
     def mousePressEvent(self, event):
+        # If middle mouse button is pressed, start panning.
+        if event.button() == Qt.MiddleButton:
+            self._pan_start = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
         pos = self.mapToScene(event.pos())
         item = self.scene().itemAt(pos, self.transform())
         if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ControlModifier):
@@ -620,6 +639,7 @@ class GraphWidget(QGraphicsView):
                     dash_pen = QPen(QColor("white"), 1, Qt.DashLine)
                     temp_edge.setPen(dash_pen)
                     temp_edge.setBrush(QBrush(Qt.NoBrush))
+                    temp_edge.setAcceptedMouseButtons(Qt.NoButton)
                     self.scene().addItem(temp_edge)
                     self.temp_edge_items.append(temp_edge)
                 event.accept()
@@ -627,6 +647,14 @@ class GraphWidget(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        # If panning, update the scrollbars.
+        if self._pan_start is not None:
+            delta = event.pos() - self._pan_start
+            self._pan_start = event.pos()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
         if self.edge_creation_sources and self.temp_edge_items:
             pos = self.mapToScene(event.pos())
             for src, temp_edge in zip(self.edge_creation_sources, self.temp_edge_items):
@@ -652,6 +680,12 @@ class GraphWidget(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        # End panning when middle mouse button is released.
+        if event.button() == Qt.MiddleButton:
+            self._pan_start = None
+            self.setCursor(Qt.ArrowCursor)
+            event.accept()
+            return
         if self.edge_creation_sources and self.temp_edge_items:
             pos = self.mapToScene(event.pos())
             dest_item = self.scene().itemAt(pos, self.transform())
