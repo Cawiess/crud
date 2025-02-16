@@ -1,0 +1,170 @@
+{
+    "nodes": [
+        {
+            "id": "p1",
+            "first_name": "Alice",
+            "last_name": "Smith",
+            "metadata": {},
+            "type": "PersonNode"
+        },
+        {
+            "id": "p2",
+            "first_name": "Bob",
+            "last_name": "Jones",
+            "metadata": {},
+            "type": "PersonNode"
+        },
+        {
+            "id": "p3",
+            "first_name": "Carol",
+            "last_name": "Taylor",
+            "metadata": {},
+            "type": "PersonNode"
+        },
+        {
+            "id": "p4",
+            "first_name": "David",
+            "last_name": "Brown",
+            "metadata": {},
+            "type": "PersonNode"
+        },
+        {
+            "id": "p5",
+            "first_name": "Eve",
+            "last_name": "Davis",
+            "metadata": {},
+            "type": "PersonNode"
+        },
+        {
+            "id": "p6",
+            "first_name": "Frank",
+            "last_name": "Miller",
+            "metadata": {},
+            "type": "PersonNode"
+        },
+        {
+            "id": "p7",
+            "first_name": "Grace",
+            "last_name": "Wilson",
+            "metadata": {},
+            "type": "PersonNode"
+        },
+        {
+            "id": "p8",
+            "first_name": "Hank",
+            "last_name": "Moore",
+            "metadata": {},
+            "type": "PersonNode"
+        },
+        {
+            "id": "a1",
+            "description": "Group Hike",
+            "activity_date": "2025-01-15",
+            "metadata": {},
+            "type": "ActivityNode"
+        },
+        {
+            "id": "a2",
+            "description": "Cooking Class",
+            "activity_date": "2025-02-05",
+            "metadata": {},
+            "type": "ActivityNode"
+        },
+        {
+            "id": "a3",
+            "description": "Art Workshop",
+            "activity_date": "2025-03-10",
+            "metadata": {},
+            "type": "ActivityNode"
+        },
+        {
+            "id": "a4",
+            "description": "Charity Run",
+            "activity_date": "2025-04-20",
+            "metadata": {},
+            "type": "ActivityNode"
+        },
+        {
+            "id": "a5",
+            "description": "Book Club",
+            "activity_date": "2025-05-05",
+            "metadata": {},
+            "type": "ActivityNode"
+        },
+        {
+            "id": "a6",
+            "description": "Tech Meetup",
+            "activity_date": "2025-06-15",
+            "metadata": {},
+            "type": "ActivityNode"
+        },
+        {
+            "id": "o1",
+            "description": "Mountain Bike",
+            "metadata": {},
+            "type": "ObjectNode"
+        },
+        {
+            "id": "o2",
+            "description": "Recipe Book",
+            "metadata": {},
+            "type": "ObjectNode"
+        },
+        {
+            "id": "o3",
+            "description": "Hiking Boots",
+            "metadata": {},
+            "type": "ObjectNode"
+        },
+        {
+            "id": "o4",
+            "description": "Paint Set",
+            "metadata": {},
+            "type": "ObjectNode"
+        },
+        {
+            "id": "o5",
+            "description": "Running Shoes",
+            "metadata": {},
+            "type": "ObjectNode"
+        }
+    ],
+    "edges": [
+        { "node_a_id": "p1", "node_b_id": "a1", "description": "attended" },
+        { "node_a_id": "p2", "node_b_id": "a1", "description": "attended" },
+        { "node_a_id": "p8", "node_b_id": "a1", "description": "attended" },
+        { "node_a_id": "p1", "node_b_id": "a2", "description": "attended" },
+        { "node_a_id": "p3", "node_b_id": "a2", "description": "attended" },
+        { "node_a_id": "p4", "node_b_id": "a3", "description": "attended" },
+        { "node_a_id": "p5", "node_b_id": "a4", "description": "attended" },
+        { "node_a_id": "p2", "node_b_id": "a4", "description": "attended" },
+        { "node_a_id": "p6", "node_b_id": "a5", "description": "attended" },
+        { "node_a_id": "p7", "node_b_id": "a6", "description": "attended" },
+        { "node_a_id": "p1", "node_b_id": "p2", "description": "friends" },
+        { "node_a_id": "p2", "node_b_id": "p3", "description": "friends" },
+        { "node_a_id": "p3", "node_b_id": "p4", "description": "friends" },
+        { "node_a_id": "p4", "node_b_id": "p5", "description": "friends" },
+        { "node_a_id": "p5", "node_b_id": "p6", "description": "friends" },
+        { "node_a_id": "p6", "node_b_id": "p7", "description": "friends" },
+        { "node_a_id": "p7", "node_b_id": "p8", "description": "friends" },
+        { "node_a_id": "p8", "node_b_id": "p1", "description": "friends" },
+        { "node_a_id": "p1", "node_b_id": "o1", "description": "owns" },
+        { "node_a_id": "p3", "node_b_id": "o2", "description": "owns" },
+        { "node_a_id": "p2", "node_b_id": "o3", "description": "uses" },
+        { "node_a_id": "p4", "node_b_id": "o4", "description": "owns" },
+        { "node_a_id": "p5", "node_b_id": "o5", "description": "uses" },
+        { "node_a_id": "p6", "node_b_id": "o3", "description": "owns" },
+        { "node_a_id": "p7", "node_b_id": "o1", "description": "owns" },
+        { "node_a_id": "p8", "node_b_id": "o2", "description": "uses" },
+        { "node_a_id": "a1", "node_b_id": "o3", "description": "provided" },
+        { "node_a_id": "a2", "node_b_id": "o2", "description": "provided" },
+        { "node_a_id": "a3", "node_b_id": "o4", "description": "provided" },
+        { "node_a_id": "a4", "node_b_id": "o5", "description": "provided" },
+        { "node_a_id": "a5", "node_b_id": "o2", "description": "provided" },
+        { "node_a_id": "a6", "node_b_id": "o1", "description": "provided" },
+        { "node_a_id": "p2", "node_b_id": "p5", "description": "collaborated" },
+        { "node_a_id": "p3", "node_b_id": "p7", "description": "met" },
+        { "node_a_id": "p4", "node_b_id": "p1", "description": "recommends" },
+        { "node_a_id": "p8", "node_b_id": "p6", "description": "followed" }
+    ]
+}

@@ -22,7 +22,6 @@ from PyQt5.QtCore import Qt, QPointF, QLineF
 
 # =============================================================================
 # DocumentHandler: Extracts persons and metadata from a PDF document.
-# The document_id is now just the file name.
 # =============================================================================
 
 class DocumentHandler:
@@ -56,9 +55,7 @@ class DocumentHandler:
         matches = pattern.findall(self.document_text)
         clean_matches = []
         for person in matches:
-            # Extract digits for the id.
             number = "".join([i for i in person if i.isdigit()])
-            # Remove digits and punctuation to get the name string.
             name = "".join([i for i in person if not i.isdigit()]).replace('- ', ' ').replace('.', '')
             parts = name.split(", ")
             if len(parts) == 2:
@@ -134,7 +131,6 @@ class GraphManager:
     def __init__(self):
         self.nodes: Dict[str, BaseNode] = {}
         self.edges: List[Edge] = []
-        # Store metadata from the PDF loaded in this session.
         self.current_pdf_metadata: Dict[str, Any] = {}
 
     def add_node(self, node: BaseNode) -> None:
@@ -145,11 +141,10 @@ class GraphManager:
     def add_edge(self, node_a_id: str, node_b_id: str, description: str = "") -> Edge:
         if node_a_id not in self.nodes or node_b_id not in self.nodes:
             raise ValueError("Both nodes must exist to create an edge.")
-        # Before adding, check if an equivalent edge already exists.
         for existing in self.edges:
             if (existing.node_a_id == node_a_id and existing.node_b_id == node_b_id and
                 existing.description == description):
-                return existing  # Skip duplicate edge.
+                return existing
         edge = Edge(node_a_id=node_a_id, node_b_id=node_b_id, description=description)
         self.edges.append(edge)
         self.nodes[node_a_id].edges.append(edge)
@@ -167,10 +162,8 @@ class GraphManager:
         return person
 
     def create_activity(self, id: str, description: str, activity_date: str, metadata: Optional[Dict[str, Any]] = None) -> ActivityNode:
-        # If no ID is provided, generate one.
         if not id.strip():
             id = str(uuid.uuid4())
-        # Use current session metadata if none provided.
         if metadata is None and self.current_pdf_metadata:
             metadata = self.current_pdf_metadata
         activity = ActivityNode(
@@ -193,8 +186,6 @@ class GraphManager:
         return object_node
 
     def to_dict(self):
-        # Convert nodes to dict but remove their internal 'edges' list so that
-        # edges appear only once in the "edges" list.
         nodes_list = []
         for node in self.nodes.values():
             node_dict = asdict(node)
@@ -433,15 +424,14 @@ class GraphWidget(QGraphicsView):
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.node_items: Dict[str, NodeItem] = {}
         self.edge_items: List[EdgeItem] = []
-        self.edge_creation_source: Optional[NodeItem] = None
-        self.temp_edge_item: Optional[QGraphicsPathItem] = None
-        # current_graph is set to the active GraphManager (or the combined one)
         self.current_graph: Optional[GraphManager] = None
         self.undo_stack = []
         self.redo_stack = []
-        # on_refresh_callback is used to update the data view.
         self.on_refresh_callback = None
         self.current_hover_node: Optional[NodeItem] = None
+        # For multi-node edge creation.
+        self.edge_creation_sources: List[NodeItem] = []
+        self.temp_edge_items: List[QGraphicsPathItem] = []
 
     def record_state(self):
         if self.current_graph is None:
@@ -519,47 +509,135 @@ class GraphWidget(QGraphicsView):
 
     def refresh(self, graph: 'GraphManager'):
         self.current_graph = graph
+        # Preserve existing node positions.
+        saved_positions = {node_id: item.pos() for node_id, item in self.node_items.items()}
         self.clear()
         num_nodes = len(graph.nodes)
-        radius = 200
-        angle_step = 360 / max(num_nodes, 1)
         for i, node in enumerate(graph.nodes.values()):
-            angle = math.radians(i * angle_step)
-            x = radius * math.cos(angle)
-            y = radius * math.sin(angle)
-            self.add_node_item(node, QPointF(x, y))
+            if node.id in saved_positions:
+                pos = saved_positions[node.id]
+            else:
+                radius = 200
+                angle_step = 360 / max(num_nodes, 1)
+                angle = math.radians(i * angle_step)
+                pos = QPointF(radius * math.cos(angle), radius * math.sin(angle))
+            self.add_node_item(node, pos)
         for edge in graph.edges:
             self.add_edge_item(edge)
         self.scene().update()
         if self.on_refresh_callback:
             self.on_refresh_callback()
 
+    def organize_layout(self):
+        """Apply a simple force-directed layout (Fruchterman-Reingold style)."""
+        if not self.node_items or self.current_graph is None:
+            return
+
+        # Define simulation parameters.
+        width = self.viewport().width()
+        height = self.viewport().height()
+        area = width * height
+        n = len(self.node_items)
+        k = math.sqrt(area / n)
+        iterations = 50
+        dt = 0.1
+
+        # Initialize positions.
+        positions = {node_id: self.node_items[node_id].pos() for node_id in self.node_items}
+        # Simple force simulation.
+        for _ in range(iterations):
+            forces = {node_id: QPointF(0, 0) for node_id in self.node_items}
+
+            # Repulsive forces between nodes.
+            for id1, pos1 in positions.items():
+                for id2, pos2 in positions.items():
+                    if id1 == id2:
+                        continue
+                    delta = pos1 - pos2
+                    distance = math.hypot(delta.x(), delta.y())
+                    if distance < 1:
+                        distance = 1
+                    force_magnitude = (k * k) / distance
+                    forces[id1] += QPointF(delta.x() / distance * force_magnitude,
+                                             delta.y() / distance * force_magnitude)
+
+            # Attractive forces along edges.
+            for edge in self.current_graph.edges:
+                if edge.node_a_id in positions and edge.node_b_id in positions:
+                    pos_a = positions[edge.node_a_id]
+                    pos_b = positions[edge.node_b_id]
+                    delta = pos_a - pos_b
+                    distance = math.hypot(delta.x(), delta.y())
+                    if distance < 1:
+                        distance = 1
+                    force_magnitude = (distance * distance) / k
+                    force = QPointF(delta.x() / distance * force_magnitude,
+                                    delta.y() / distance * force_magnitude)
+                    forces[edge.node_a_id] -= force
+                    forces[edge.node_b_id] += force
+
+            # Update positions.
+            for node_id in positions:
+                disp = forces[node_id]
+                max_disp = 20
+                disp_length = math.hypot(disp.x(), disp.y())
+                if disp_length > max_disp:
+                    disp = QPointF(disp.x() / disp_length * max_disp, disp.y() / disp_length * max_disp)
+                positions[node_id] += QPointF(disp.x() * dt, disp.y() * dt)
+
+        # Apply new positions.
+        for node_id, pos in positions.items():
+            self.node_items[node_id].setPos(pos)
+        self.scene().update()
+
+    def wheelEvent(self, event):
+        """Zoom in/out using the mouse wheel."""
+        zoom_in_factor = 1.15
+        zoom_out_factor = 1 / zoom_in_factor
+        if event.angleDelta().y() > 0:
+            factor = zoom_in_factor
+        else:
+            factor = zoom_out_factor
+        self.scale(factor, factor)
+
     def mousePressEvent(self, event):
         pos = self.mapToScene(event.pos())
         item = self.scene().itemAt(pos, self.transform())
-        if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ControlModifier) and isinstance(item, NodeItem):
-            self.edge_creation_source = item
-            self.edge_creation_source.setScale(1.2)
-            self.temp_edge_item = QGraphicsPathItem()
-            dash_pen = QPen(QColor("white"), 1, Qt.DashLine)
-            self.temp_edge_item.setPen(dash_pen)
-            self.temp_edge_item.setBrush(QBrush(Qt.NoBrush))
-            self.scene().addItem(self.temp_edge_item)
-            event.accept()
-            return
+        if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ControlModifier):
+            selected_items = [it for it in self.scene().selectedItems() if isinstance(it, NodeItem) and it.node.type == "PersonNode"]
+            if selected_items:
+                self.edge_creation_sources = selected_items
+            elif isinstance(item, NodeItem) and item.node.type == "PersonNode":
+                self.edge_creation_sources = [item]
+            else:
+                self.edge_creation_sources = []
+            if self.edge_creation_sources:
+                for src in self.edge_creation_sources:
+                    src.setScale(1.2)
+                self.temp_edge_items = []
+                for src in self.edge_creation_sources:
+                    temp_edge = QGraphicsPathItem()
+                    dash_pen = QPen(QColor("white"), 1, Qt.DashLine)
+                    temp_edge.setPen(dash_pen)
+                    temp_edge.setBrush(QBrush(Qt.NoBrush))
+                    self.scene().addItem(temp_edge)
+                    self.temp_edge_items.append(temp_edge)
+                event.accept()
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self.edge_creation_source and self.temp_edge_item:
+        if self.edge_creation_sources and self.temp_edge_items:
             pos = self.mapToScene(event.pos())
-            start = self.edge_creation_source.get_center()
-            path = QPainterPath()
-            path.moveTo(start)
-            ctrl = (start + pos) * 0.5
-            path.quadTo(ctrl, pos)
-            self.temp_edge_item.setPath(path)
+            for src, temp_edge in zip(self.edge_creation_sources, self.temp_edge_items):
+                start = src.get_center()
+                path = QPainterPath()
+                path.moveTo(start)
+                ctrl = (start + pos) * 0.5
+                path.quadTo(ctrl, pos)
+                temp_edge.setPath(path)
             hover_item = self.scene().itemAt(pos, self.transform())
-            if hover_item is not None and isinstance(hover_item, NodeItem) and hover_item is not self.edge_creation_source:
+            if hover_item is not None and isinstance(hover_item, NodeItem) and hover_item not in self.edge_creation_sources:
                 if self.current_hover_node is not hover_item:
                     if self.current_hover_node is not None:
                         self.current_hover_node.setScale(1.0)
@@ -574,22 +652,24 @@ class GraphWidget(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if self.edge_creation_source and self.temp_edge_item:
+        if self.edge_creation_sources and self.temp_edge_items:
             pos = self.mapToScene(event.pos())
             dest_item = self.scene().itemAt(pos, self.transform())
-            self.scene().removeItem(self.temp_edge_item)
-            self.temp_edge_item = None
-            if isinstance(dest_item, NodeItem) and dest_item is not self.edge_creation_source:
+            for temp_edge in self.temp_edge_items:
+                self.scene().removeItem(temp_edge)
+            self.temp_edge_items = []
+            if isinstance(dest_item, NodeItem) and dest_item not in self.edge_creation_sources:
                 new_desc, ok = QInputDialog.getText(self, "Edge Description", "Enter edge description:")
                 if ok:
                     self.record_state()
-                    try:
-                        self.current_graph.add_edge(self.edge_creation_source.node.id, dest_item.node.id, new_desc.strip())
-                    except ValueError as e:
-                        print(e)
-            if self.edge_creation_source:
-                self.edge_creation_source.setScale(1.0)
-                self.edge_creation_source = None
+                    for src in self.edge_creation_sources:
+                        try:
+                            self.current_graph.add_edge(src.node.id, dest_item.node.id, new_desc.strip())
+                        except ValueError as e:
+                            print(e)
+            for src in self.edge_creation_sources:
+                src.setScale(1.0)
+            self.edge_creation_sources = []
             if self.current_hover_node:
                 self.current_hover_node.setScale(1.0)
                 self.current_hover_node = None
@@ -660,7 +740,6 @@ class ActivityFormWidget(QWidget):
             self.graph_widget.refresh(self.graph_manager)
             self.id_edit.clear()
             self.desc_edit.clear()
-            # Do not clear the date field so the metadata remains.
         except ValueError as e:
             print(e)
 
@@ -810,7 +889,6 @@ class EditorWidget(QWidget):
         self.active_graph_manager = active_graph_manager
         self.graph_widget = graph_widget
 
-        # Group boxes for each form.
         activity_group = QGroupBox("Activity")
         activity_group.setStyleSheet(
             "QGroupBox { background-color: rgba(255, 0, 0, 50); border: 1px solid gray; border-radius: 5px; margin: 5px; padding: 5px; }"
@@ -856,12 +934,10 @@ class EditorWidget(QWidget):
         main_layout.addWidget(self.graph_widget)
         self.setLayout(main_layout)
 
-        # Set a refresh callback that updates both the edge form combo boxes and the data view.
         self.graph_widget.on_refresh_callback = lambda: self.update_refresh_callback()
 
     def update_refresh_callback(self):
         self.edge_form.refresh_combo()
-        # Use self.window() to get the top-level widget (MainWindow)
         main_window = self.window()
         if main_window and hasattr(main_window, "update_data_view"):
             main_window.update_data_view()
@@ -874,20 +950,15 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Social Network Graph Editor")
-        # Dictionary for sessions: { session_key: GraphManager }
         self.sessions: Dict[str, GraphManager] = {}
         self.active_session_key: Optional[str] = None
-        # Start with no session loaded. (Combined view will be empty.)
         self.active_graph_manager = GraphManager()
 
-        # Graph widget displays the active (or combined) graph.
         self.graph_widget = GraphWidget()
         self.graph_widget.refresh(self.active_graph_manager)
 
-        # Data view displays the combined data from all sessions.
         self.data_view_widget = DataViewWidget()
 
-        # Editor widget works only when a single session is active.
         self.editor_widget = EditorWidget(self.active_graph_manager, self.graph_widget)
 
         self.tab_widget = QTabWidget()
@@ -936,7 +1007,11 @@ class MainWindow(QMainWindow):
         load_pdf_action.setShortcut("Ctrl+P")
         toolbar.addAction(load_pdf_action)
 
-        # Session selector: a combo box to choose a session or combined view.
+        # "Force Layout" button.
+        layout_action = QAction("Force Layout", self)
+        layout_action.triggered.connect(self.graph_widget.organize_layout)
+        toolbar.addAction(layout_action)
+
         self.session_selector = QComboBox()
         self.session_selector.addItem("Combined View", None)
         self.session_selector.currentIndexChanged.connect(self.session_changed)
@@ -953,12 +1028,11 @@ class MainWindow(QMainWindow):
         if not pdf_filename:
             return
 
-        # Process the PDF file.
         doc_handler = DocumentHandler(pdf_filename)
         persons = doc_handler.get_persons()
-        doc_id = doc_handler.get_document_id()  # Now just the file name.
+        doc_id = doc_handler.get_document_id()
         date = doc_handler.get_date()
-        info_codes = doc_handler.get_information_codes()  # [valuecode, handlingcode]
+        info_codes = doc_handler.get_information_codes()
 
         metadata = {
             "document_id": doc_id,
@@ -967,25 +1041,15 @@ class MainWindow(QMainWindow):
             "handlingcode": info_codes[1]
         }
 
-        # Create a new session.
         new_session = GraphManager()
         new_session.current_pdf_metadata = metadata
 
-        # Add person nodes extracted from the PDF.
         for person in persons:
             new_session.create_person(person["id"], person["first_name"], person["last_name"])
 
-        # Use the PDF's date as the default for activity nodes.
-        if date:
-            # (This default will be applied in the activity form when this session is active.)
-            pass
-
-        # Store the new session.
-        session_key = doc_id  # Assume uniqueness.
+        session_key = doc_id
         self.sessions[session_key] = new_session
-        # Add the session to the selector.
         self.session_selector.addItem(f"Session: {doc_id}", session_key)
-        # Make this new session active.
         self.session_selector.setCurrentIndex(self.session_selector.count() - 1)
         self.active_session_key = session_key
         self.active_graph_manager = new_session
@@ -996,13 +1060,11 @@ class MainWindow(QMainWindow):
     def session_changed(self, index):
         session_key = self.session_selector.itemData(index)
         if session_key is None:
-            # Combined view selected.
             self.active_session_key = None
             combined = self.get_combined_graph()
             self.graph_widget.refresh(combined)
             self.set_forms_enabled(False)
         else:
-            # Single session view.
             self.active_session_key = session_key
             self.active_graph_manager = self.sessions[session_key]
             self.graph_widget.refresh(self.active_graph_manager)
@@ -1010,12 +1072,10 @@ class MainWindow(QMainWindow):
             self.set_forms_enabled(True)
 
     def refresh_editor_view(self):
-        # Update the editor widget's graph_manager references.
         self.editor_widget.activity_form.graph_manager = self.active_graph_manager
         self.editor_widget.person_form.graph_manager = self.active_graph_manager
         self.editor_widget.object_form.graph_manager = self.active_graph_manager
         self.editor_widget.edge_form.graph_manager = self.active_graph_manager
-        # Set the activity form's date default.
         if self.active_graph_manager.current_pdf_metadata.get("date"):
             self.editor_widget.activity_form.date_edit.setText(self.active_graph_manager.current_pdf_metadata.get("date"))
         self.graph_widget.refresh(self.active_graph_manager)
@@ -1058,7 +1118,6 @@ class MainWindow(QMainWindow):
         if filename:
             with open(filename, "r") as f:
                 data = json.load(f)
-            # For simplicity, treat loaded data as one new session.
             new_default = GraphManager()
             new_default.load_from_dict(data)
             self.sessions = {"default_loaded": new_default}
