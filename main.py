@@ -14,11 +14,15 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QGraphicsView, QGraphicsScene,
     QGraphicsItem, QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsTextItem,
     QVBoxLayout, QHBoxLayout, QWidget, QFormLayout, QPushButton, QLineEdit,
-    QLabel, QComboBox, QFileDialog, QToolBar, QAction, QTabWidget, QPlainTextEdit,
-    QInputDialog, QDialog, QGroupBox, QShortcut, QMessageBox
+    QLabel, QComboBox, QFileDialog, QToolBar, QAction, QTabWidget, QTextEdit,
+    QInputDialog, QDialog, QGroupBox, QShortcut, QMessageBox, QCheckBox, QDockWidget, QPlainTextEdit,
+    QSpinBox, QDoubleSpinBox
 )
-from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QPainterPath, QPalette, QFont, QKeySequence
-from PyQt5.QtCore import Qt, QPointF, QLineF, QTimer, QVariantAnimation
+from PyQt5.QtGui import (
+    QPainter, QPen, QBrush, QColor, QPainterPath, QPalette, QFont,
+    QKeySequence, QTextCharFormat, QSyntaxHighlighter
+)
+from PyQt5.QtCore import Qt, QPointF, QTimer, QVariantAnimation
 
 # =============================================================================
 # DocumentHandler: Extracts persons and metadata from a PDF document.
@@ -45,12 +49,6 @@ class DocumentHandler:
         return self.document_id
 
     def get_persons(self):
-        """
-        Capture patterns like:
-          19860408-0351 Doe, John.
-          19900303-6114 Smith, Jane.
-        The trailing period is optional.
-        """
         pattern = re.compile(r"\b\d{8}-\d{4}\s+[A-Za-z]+(?:\s+[A-Za-z]+)*,\s*[A-Za-z]+(?:\s+[A-Za-z]+)*\.?")
         matches = pattern.findall(self.document_text)
         clean_matches = []
@@ -70,9 +68,6 @@ class DocumentHandler:
         return clean_matches
 
     def get_information_codes(self):
-        """
-        Capture patterns like: A1, B2, etc.
-        """
         valuecode_match = re.search(r"grundbearbetning:\s*([A-Z]\d)", self.document_text)
         handlingcode_match = re.search(r"användningsvillkor:\s*([A-Z]\d)", self.document_text)
         valuecode = valuecode_match.group(1) if valuecode_match else ""
@@ -111,11 +106,12 @@ class BaseNode:
 class PersonNode(BaseNode):
     first_name: str
     last_name: str
+    is_unknown: bool = False
 
 @dataclass(kw_only=True)
 class ActivityNode(BaseNode):
     description: str
-    activity_date: str  # Expected format YYYY-MM-DD
+    activity_date: str
 
 @dataclass(kw_only=True)
 class ObjectNode(BaseNode):
@@ -132,6 +128,7 @@ class GraphManager:
         self.nodes: Dict[str, BaseNode] = {}
         self.edges: List[Edge] = []
         self.current_pdf_metadata: Dict[str, Any] = {}
+        self.source_text: str = ""
 
     def add_node(self, node: BaseNode) -> None:
         if node.id in self.nodes:
@@ -151,12 +148,13 @@ class GraphManager:
         self.nodes[node_b_id].edges.append(edge)
         return edge
 
-    def create_person(self, id: str, first_name: str, last_name: str, metadata: Optional[Dict[str, Any]] = None) -> PersonNode:
+    def create_person(self, id: str, first_name: str, last_name: str, metadata: Optional[Dict[str, Any]] = None, is_unknown: bool = False) -> PersonNode:
         person = PersonNode(
             id=id,
             first_name=first_name,
             last_name=last_name,
-            metadata=metadata or {}
+            metadata=metadata or {},
+            is_unknown=is_unknown
         )
         self.add_node(person)
         return person
@@ -223,6 +221,52 @@ class GraphManager:
                 self.nodes[edge.node_b_id].edges.append(edge)
 
 # =============================================================================
+# AnnotationHighlighter: Custom highlighter to format selected text.
+# =============================================================================
+
+class AnnotationHighlighter(QSyntaxHighlighter):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.selection_start = None
+        self.selection_end = None
+        self.default_font_size = parent.defaultFont().pointSize()
+    
+    def highlightBlock(self, text):
+        if self.selection_start is None or self.selection_end is None:
+            return
+        block_start = self.currentBlock().position()
+        block_end = block_start + len(text)
+        sel_start = max(self.selection_start, block_start)
+        sel_end = min(self.selection_end, block_end)
+        if sel_start < sel_end:
+            fmt = QTextCharFormat()
+            fmt.setBackground(QColor("#ADD8E6"))  # gentle light-blue
+            fmt.setFontWeight(QFont.Bold)
+            fmt.setFontPointSize(self.default_font_size + 2)
+            self.setFormat(sel_start - block_start, sel_end - sel_start, fmt)
+
+# =============================================================================
+# AnnotationTextEdit: Subclass of QTextEdit that uses AnnotationHighlighter.
+# =============================================================================
+
+class AnnotationTextEdit(QTextEdit):
+    def __init__(self, *args, **kwargs):
+        super(AnnotationTextEdit, self).__init__(*args, **kwargs)
+        self.setReadOnly(True)
+        self.highlighter = AnnotationHighlighter(self.document())
+        self.selectionChanged.connect(self.updateHighlighting)
+    
+    def updateHighlighting(self):
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            self.highlighter.selection_start = cursor.selectionStart()
+            self.highlighter.selection_end = cursor.selectionEnd()
+        else:
+            self.highlighter.selection_start = None
+            self.highlighter.selection_end = None
+        QTimer.singleShot(0, self.highlighter.rehighlight)
+
+# =============================================================================
 # Visualization: NodeItem and EdgeItem for QGraphicsScene
 # =============================================================================
 
@@ -239,22 +283,24 @@ class NodeItem(QGraphicsEllipseItem):
 
         if node.type == "ActivityNode":
             fill_color = QColor("red")
+            label = node.description
         elif node.type == "PersonNode":
-            fill_color = QColor("blue")
+            if getattr(node, "is_unknown", False):
+                fill_color = QColor("gray")
+                label = f"{node.first_name} {node.last_name} (Unknown)"
+            else:
+                fill_color = QColor("blue")
+                label = f"{node.first_name} {node.last_name}"
         elif node.type == "ObjectNode":
             fill_color = QColor("green")
+            label = node.description
         else:
             fill_color = QColor("gray")
+            label = node.id
+
         outline_color = fill_color.darker(150)
         self.setBrush(QBrush(fill_color))
         self.setPen(QPen(outline_color, 2))
-
-        if node.type == "PersonNode":
-            label = f"{node.first_name} {node.last_name}"
-        elif node.type in ["ActivityNode", "ObjectNode"]:
-            label = node.description
-        else:
-            label = node.id
 
         self.text_item = QGraphicsTextItem(label, self)
         self.text_item.setDefaultTextColor(Qt.white)
@@ -288,7 +334,8 @@ class NodeItem(QGraphicsEllipseItem):
                 self.graph_widget.record_state()
                 self.node.first_name = first_edit.text().strip()
                 self.node.last_name = last_edit.text().strip()
-                self.text_item.setPlainText(f"{self.node.first_name} {self.node.last_name}")
+                self.text_item.setPlainText(f"{self.node.first_name} {self.node.last_name}" +
+                                            (" (Unknown)" if getattr(self.node, "is_unknown", False) else ""))
         elif self.node.type == "ActivityNode":
             dialog = QDialog()
             dialog.setWindowTitle("Edit Activity")
@@ -421,7 +468,6 @@ class GraphWidget(QGraphicsView):
         super().__init__(parent)
         self.setRenderHint(QPainter.Antialiasing)
         self.setScene(QGraphicsScene(self))
-        # Use RubberBandDrag for selection by default.
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.node_items: Dict[str, NodeItem] = {}
         self.edge_items: List[EdgeItem] = []
@@ -430,12 +476,9 @@ class GraphWidget(QGraphicsView):
         self.redo_stack = []
         self.on_refresh_callback = None
         self.current_hover_node: Optional[NodeItem] = None
-        # For multi-node edge creation.
         self.edge_creation_sources: List[NodeItem] = []
         self.temp_edge_items: List[QGraphicsPathItem] = []
-        # Store animations to prevent garbage collection.
         self.layoutAnimations = []
-        # For panning with the middle mouse button.
         self._pan_start = None
 
     def record_state(self):
@@ -514,7 +557,6 @@ class GraphWidget(QGraphicsView):
 
     def refresh(self, graph: 'GraphManager'):
         self.current_graph = graph
-        # Preserve existing node positions.
         saved_positions = {node_id: item.pos() for node_id, item in self.node_items.items()}
         self.clear()
         num_nodes = len(graph.nodes)
@@ -534,11 +576,8 @@ class GraphWidget(QGraphicsView):
             self.on_refresh_callback()
 
     def organize_layout(self):
-        """Apply a simple force-directed layout (Fruchterman-Reingold style)
-        with smooth animation using QVariantAnimation."""
         if not self.node_items or self.current_graph is None:
             return
-
         width = self.viewport().width()
         height = self.viewport().height()
         area = width * height
@@ -546,13 +585,9 @@ class GraphWidget(QGraphicsView):
         k = math.sqrt(area / n)
         iterations = 50
         dt = 0.1
-
-        # Compute new positions.
         positions = {node_id: self.node_items[node_id].pos() for node_id in self.node_items}
         for _ in range(iterations):
             forces = {node_id: QPointF(0, 0) for node_id in self.node_items}
-
-            # Repulsive forces.
             for id1, pos1 in positions.items():
                 for id2, pos2 in positions.items():
                     if id1 == id2:
@@ -564,8 +599,6 @@ class GraphWidget(QGraphicsView):
                     force_magnitude = (k * k) / distance
                     forces[id1] += QPointF(delta.x() / distance * force_magnitude,
                                              delta.y() / distance * force_magnitude)
-
-            # Attractive forces along edges.
             for edge in self.current_graph.edges:
                 if edge.node_a_id in positions and edge.node_b_id in positions:
                     pos_a = positions[edge.node_a_id]
@@ -579,8 +612,6 @@ class GraphWidget(QGraphicsView):
                                     delta.y() / distance * force_magnitude)
                     forces[edge.node_a_id] -= force
                     forces[edge.node_b_id] += force
-
-            # Update positions.
             for node_id in positions:
                 disp = forces[node_id]
                 max_disp = 20
@@ -588,10 +619,8 @@ class GraphWidget(QGraphicsView):
                 if disp_length > max_disp:
                     disp = QPointF(disp.x() / disp_length * max_disp, disp.y() / disp_length * max_disp)
                 positions[node_id] += QPointF(disp.x() * dt, disp.y() * dt)
-
-        # Animate each node smoothly from its current position to the new position.
         self.layoutAnimations = []
-        duration = 500  # milliseconds
+        duration = 500
         for node_id, new_pos in positions.items():
             node_item = self.node_items[node_id]
             animation = QVariantAnimation(self)
@@ -604,17 +633,12 @@ class GraphWidget(QGraphicsView):
         QTimer.singleShot(duration + 50, lambda: self.layoutAnimations.clear())
 
     def wheelEvent(self, event):
-        """Zoom in/out using the mouse wheel."""
         zoom_in_factor = 1.15
         zoom_out_factor = 1 / zoom_in_factor
-        if event.angleDelta().y() > 0:
-            factor = zoom_in_factor
-        else:
-            factor = zoom_out_factor
+        factor = zoom_in_factor if event.angleDelta().y() > 0 else zoom_out_factor
         self.scale(factor, factor)
 
     def mousePressEvent(self, event):
-        # If middle mouse button is pressed, start panning.
         if event.button() == Qt.MiddleButton:
             self._pan_start = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
@@ -647,7 +671,6 @@ class GraphWidget(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        # If panning, update the scrollbars.
         if self._pan_start is not None:
             delta = event.pos() - self._pan_start
             self._pan_start = event.pos()
@@ -680,7 +703,6 @@ class GraphWidget(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        # End panning when middle mouse button is released.
         if event.button() == Qt.MiddleButton:
             self._pan_start = None
             self.setCursor(Qt.ArrowCursor)
@@ -766,6 +788,8 @@ class ActivityFormWidget(QWidget):
 
     def add_activity(self):
         act_id = self.id_edit.text().strip()
+        if not act_id:
+            act_id = str(uuid.uuid4())
         desc = self.desc_edit.text().strip()
         date = self.date_edit.text().strip()
         try:
@@ -789,45 +813,133 @@ class PersonFormWidget(QWidget):
         layout.addRow(QLabel("Person ID:"), self.id_edit)
         layout.addRow(QLabel("First Name:"), self.first_edit)
         layout.addRow(QLabel("Last Name:"), self.last_edit)
+        self.unknown_checkbox = QCheckBox("Unknown Person")
+        self.unknown_checkbox.toggled.connect(self.on_unknown_toggled)
+        layout.addRow(self.unknown_checkbox)
         self.submit_btn = QPushButton("Add Person")
         self.submit_btn.clicked.connect(self.add_person)
         layout.addRow(self.submit_btn)
         self.last_edit.returnPressed.connect(self.add_person)
 
+    def on_unknown_toggled(self, checked):
+        if checked:
+            self.first_edit.setText("Unknown")
+            self.first_edit.setDisabled(True)
+            self.last_edit.setText("Unknown")
+            self.last_edit.setDisabled(True)
+        else:
+            self.first_edit.setText("")
+            self.first_edit.setDisabled(False)
+            self.last_edit.setText("")
+            self.last_edit.setDisabled(False)
+
     def add_person(self):
         p_id = self.id_edit.text().strip()
+        if not p_id:
+            p_id = str(uuid.uuid4())
         first = self.first_edit.text().strip()
         last = self.last_edit.text().strip()
+        is_unknown = self.unknown_checkbox.isChecked()
         try:
             self.graph_widget.record_state()
-            self.graph_manager.create_person(p_id, first, last)
+            self.graph_manager.create_person(p_id, first, last, is_unknown=is_unknown)
             self.graph_widget.refresh(self.graph_manager)
             self.id_edit.clear()
             self.first_edit.clear()
             self.last_edit.clear()
+            self.unknown_checkbox.setChecked(False)
         except ValueError as e:
             print(e)
+
+# =============================================================================
+# ObjectFormWidget with Predefined Templates and Aligned Fields
+# =============================================================================
 
 class ObjectFormWidget(QWidget):
     def __init__(self, graph_manager: GraphManager, graph_widget: GraphWidget, parent=None):
         super().__init__(parent)
         self.graph_manager = graph_manager
         self.graph_widget = graph_widget
-        layout = QFormLayout(self)
+        
+        # Use a single QFormLayout so that the "Description:" row and dynamic template rows align.
+        self.layout = QVBoxLayout(self)
+        self.form_layout = QFormLayout()
+        self.layout.addLayout(self.form_layout)
+        
+        # Predefined templates with field definitions.
+        self.templates = {
+            "Car": {
+                "License Plate": QLineEdit,
+                "Model": QLineEdit,
+                "Year": QSpinBox,
+            },
+            "Product": {
+                "Quantity": QSpinBox,
+                "Price": QDoubleSpinBox,
+            }
+        }
+        self.current_template = None
+        self.template_widgets = {}
+        
         self.desc_edit = QLineEdit()
-        layout.addRow(QLabel("Description:"), self.desc_edit)
+        self.form_layout.addRow("Description:", self.desc_edit)
+        self.desc_edit.textChanged.connect(self.check_template)
+        
         self.submit_btn = QPushButton("Add Object")
         self.submit_btn.clicked.connect(self.add_object)
-        layout.addRow(self.submit_btn)
-        self.desc_edit.returnPressed.connect(self.add_object)
-
+        self.layout.addWidget(self.submit_btn)
+    
+    def check_template(self, text):
+        text = text.strip()
+        if text in self.templates:
+            if self.current_template != text:
+                self.clear_template_fields()
+                self.current_template = text
+                for label, widget_class in self.templates[text].items():
+                    widget = widget_class()
+                    if isinstance(widget, QSpinBox):
+                        widget.setMinimum(0)
+                    if isinstance(widget, QDoubleSpinBox):
+                        widget.setMinimum(0)
+                        widget.setDecimals(2)
+                    self.form_layout.addRow(label + ":", widget)
+                    self.template_widgets[label] = widget
+        else:
+            if self.current_template is not None:
+                self.clear_template_fields()
+                self.current_template = None
+    
+    def clear_template_fields(self):
+        for label, widget in list(self.template_widgets.items()):
+            self.remove_row_containing_widget(widget)
+        self.template_widgets = {}
+    
+    def remove_row_containing_widget(self, widget):
+        row_count = self.form_layout.rowCount()
+        for row in range(row_count):
+            field_item = self.form_layout.itemAt(row, QFormLayout.FieldRole)
+            if field_item and field_item.widget() == widget:
+                self.form_layout.removeRow(row)
+                break
+    
     def add_object(self):
         desc = self.desc_edit.text().strip()
+        metadata = {}
+        if self.current_template:
+            fields_data = {}
+            for label, widget in self.template_widgets.items():
+                if isinstance(widget, QLineEdit):
+                    fields_data[label] = widget.text().strip()
+                elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                    fields_data[label] = widget.value()
+            metadata = {"template": self.current_template, "fields": fields_data}
         try:
             self.graph_widget.record_state()
-            self.graph_manager.create_object(desc)
+            self.graph_manager.create_object(desc, metadata)
             self.graph_widget.refresh(self.graph_manager)
             self.desc_edit.clear()
+            self.clear_template_fields()
+            self.current_template = None
         except ValueError as e:
             print(e)
 
@@ -977,7 +1089,7 @@ class EditorWidget(QWidget):
             main_window.update_data_view()
 
 # =============================================================================
-# MainWindow: Manages sessions, session selector, and combined export.
+# MainWindow: Manages sessions, session selector, export, and annotation mode.
 # =============================================================================
 
 class MainWindow(QMainWindow):
@@ -1001,6 +1113,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tab_widget)
 
         self.create_toolbar()
+        self.create_annotation_dock()
         self.create_global_shortcuts()
 
     def create_toolbar(self):
@@ -1041,16 +1154,44 @@ class MainWindow(QMainWindow):
         load_pdf_action.setShortcut("Ctrl+P")
         toolbar.addAction(load_pdf_action)
 
-        # "Force Layout" button.
         layout_action = QAction("Force Layout", self)
         layout_action.triggered.connect(self.graph_widget.organize_layout)
         toolbar.addAction(layout_action)
+
+        self.toggle_annotation_action = QAction("Toggle Annotation", self)
+        self.toggle_annotation_action.setCheckable(True)
+        self.toggle_annotation_action.triggered.connect(self.toggle_annotation_mode)
+        toolbar.addAction(self.toggle_annotation_action)
 
         self.session_selector = QComboBox()
         self.session_selector.addItem("Combined View", None)
         self.session_selector.currentIndexChanged.connect(self.session_changed)
         toolbar.addWidget(QLabel("Session: "))
         toolbar.addWidget(self.session_selector)
+
+    def create_annotation_dock(self):
+        self.annotationDock = QDockWidget("Annotation Mode", self)
+        self.annotationDock.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+        dock_widget = QWidget()
+        layout = QVBoxLayout(dock_widget)
+        self.annotationTextEdit = AnnotationTextEdit()
+        self.annotationTextEdit.setReadOnly(True)
+        self.annotationTextEdit.setStyleSheet(
+            "QTextEdit { background-color: #fdf6e3; color: #333; border: 1px solid #ccc; padding: 5px; }"
+        )
+        self.attachAnnotationBtn = QPushButton("Attach Annotation")
+        self.attachAnnotationBtn.clicked.connect(self.attach_annotation)
+        layout.addWidget(self.annotationTextEdit)
+        layout.addWidget(self.attachAnnotationBtn)
+        self.annotationDock.setWidget(dock_widget)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.annotationDock)
+        self.annotationDock.hide()
+
+    def toggle_annotation_mode(self, checked):
+        if checked:
+            self.annotationDock.show()
+        else:
+            self.annotationDock.hide()
 
     def create_global_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+F"), self, activated=lambda: self.search_edit.setFocus())
@@ -1061,26 +1202,22 @@ class MainWindow(QMainWindow):
         pdf_filename, _ = QFileDialog.getOpenFileName(self, "Load PDF Document", "", "PDF Files (*.pdf)")
         if not pdf_filename:
             return
-
         doc_handler = DocumentHandler(pdf_filename)
         persons = doc_handler.get_persons()
         doc_id = doc_handler.get_document_id()
         date = doc_handler.get_date()
         info_codes = doc_handler.get_information_codes()
-
         metadata = {
             "document_id": doc_id,
             "date": date,
             "valuecode": info_codes[0],
             "handlingcode": info_codes[1]
         }
-
         new_session = GraphManager()
         new_session.current_pdf_metadata = metadata
-
+        new_session.source_text = doc_handler.document_text
         for person in persons:
             new_session.create_person(person["id"], person["first_name"], person["last_name"])
-
         session_key = doc_id
         self.sessions[session_key] = new_session
         self.session_selector.addItem(f"Session: {doc_id}", session_key)
@@ -1088,7 +1225,6 @@ class MainWindow(QMainWindow):
         self.active_session_key = session_key
         self.active_graph_manager = new_session
         self.refresh_editor_view()
-
         print(f"PDF Document '{pdf_filename}' loaded as session '{doc_id}'. Metadata applied: {metadata}")
 
     def session_changed(self, index):
@@ -1113,6 +1249,7 @@ class MainWindow(QMainWindow):
         if self.active_graph_manager.current_pdf_metadata.get("date"):
             self.editor_widget.activity_form.date_edit.setText(self.active_graph_manager.current_pdf_metadata.get("date"))
         self.graph_widget.refresh(self.active_graph_manager)
+        self.annotationTextEdit.setPlainText(self.active_graph_manager.source_text)
         self.update_data_view()
 
     def set_forms_enabled(self, enabled: bool):
@@ -1138,6 +1275,24 @@ class MainWindow(QMainWindow):
         combined = self.get_combined_graph()
         self.data_view_widget.set_graph_manager(combined)
         self.data_view_widget.refresh_data()
+
+    def attach_annotation(self):
+        cursor = self.annotationTextEdit.textCursor()
+        selected_text = cursor.selectedText().strip()
+        if not selected_text:
+            QMessageBox.warning(self, "No Text Selected", "Please highlight some text to attach as annotation.")
+            return
+        selected_items = [item for item in self.graph_widget.scene().selectedItems() if isinstance(item, NodeItem)]
+        if len(selected_items) != 1:
+            QMessageBox.warning(self, "Select One Node", "Please select exactly one node to attach the annotation.")
+            return
+        node_item = selected_items[0]
+        if "annotations" not in node_item.node.metadata:
+            node_item.node.metadata["annotations"] = []
+        node_item.node.metadata["annotations"].append(selected_text)
+        self.graph_widget.record_state()
+        self.graph_widget.refresh(self.active_graph_manager)
+        QMessageBox.information(self, "Annotation Attached", "Annotation attached to the selected node.")
 
     def save_json(self):
         combined = self.get_combined_graph()
