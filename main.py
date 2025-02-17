@@ -1296,10 +1296,50 @@ class MainWindow(QMainWindow):
 
     def save_json(self):
         combined = self.get_combined_graph()
+        new_data = combined.to_dict()
         filename, _ = QFileDialog.getSaveFileName(self, "Save Graph", "", "JSON Files (*.json)")
         if filename:
+            if os.path.exists(filename):
+                with open(filename, "r") as f:
+                    existing_data = json.load(f)
+            else:
+                existing_data = {"nodes": [], "edges": []}
+            # Build a set of document_ids already in the existing file
+            existing_doc_ids = set()
+            for node in existing_data.get("nodes", []):
+                md = node.get("metadata", {})
+                doc_id = md.get("document_id")
+                if doc_id:
+                    existing_doc_ids.add(doc_id)
+            # Filter new nodes: if node's metadata contains a document_id already in existing_doc_ids, skip it.
+            filtered_new_nodes = []
+            for node in new_data.get("nodes", []):
+                md = node.get("metadata", {})
+                doc_id = md.get("document_id")
+                if doc_id:
+                    if doc_id not in existing_doc_ids:
+                        filtered_new_nodes.append(node)
+                        existing_doc_ids.add(doc_id)
+                else:
+                    if not any(existing_node["id"] == node["id"] for existing_node in existing_data.get("nodes", [])):
+                        filtered_new_nodes.append(node)
+            merged_nodes = existing_data.get("nodes", []) + filtered_new_nodes
+            # Merge edges without duplication (based on node_a_id, node_b_id, description)
+            existing_edges = existing_data.get("edges", [])
+            edge_keys = set()
+            for edge in existing_edges:
+                key = (edge["node_a_id"], edge["node_b_id"], edge["description"])
+                edge_keys.add(key)
+            new_edges = []
+            for edge in new_data.get("edges", []):
+                key = (edge["node_a_id"], edge["node_b_id"], edge["description"])
+                if key not in edge_keys:
+                    new_edges.append(edge)
+                    edge_keys.add(key)
+            merged_edges = existing_edges + new_edges
+            merged_data = {"nodes": merged_nodes, "edges": merged_edges}
             with open(filename, "w") as f:
-                json.dump(combined.to_dict(), f, indent=4)
+                json.dump(merged_data, f, indent=4)
             print("Graph saved to", filename)
 
     def load_json(self):
