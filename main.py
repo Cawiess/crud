@@ -1124,13 +1124,11 @@ class EditorWidget(QWidget):
             main_window.update_data_view()
 
 # =============================================================================
-# MainWindow: Manages sessions, persistent storage, bulk PDF import,
-# annotation mode, and session dashboard.
+# MainWindow: Manages sessions, persistent storage (manual save/load),
+# bulk PDF import, annotation mode, and session dashboard.
 # =============================================================================
 
 class MainWindow(QMainWindow):
-    PERSISTENCE_FILE = "persistent_data.json"  # saved next to main.py
-
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Social Network Graph Editor")
@@ -1157,8 +1155,8 @@ class MainWindow(QMainWindow):
         self.create_annotation_dock()
         self.create_global_shortcuts()
 
-        # Attempt to load persistent sessions from file
-        self.load_persistent_data()
+        # Note: Persistent data is NOT loaded automatically.
+        # The user must choose to load a saved session via the toolbar.
 
     def create_toolbar(self):
         toolbar = QToolBar("Main Toolbar", self)
@@ -1184,14 +1182,15 @@ class MainWindow(QMainWindow):
         clear_filter_action.setShortcut("Ctrl+L")
         toolbar.addAction(clear_filter_action)
 
-        save_action = QAction("Save JSON", self)
-        save_action.triggered.connect(self.save_json)
-        save_action.setShortcut("Ctrl+S")
-        load_action = QAction("Load JSON", self)
-        load_action.triggered.connect(self.load_json)
-        load_action.setShortcut("Ctrl+O")
-        toolbar.addAction(save_action)
-        toolbar.addAction(load_action)
+        save_json_action = QAction("Save JSON", self)
+        save_json_action.triggered.connect(self.save_json)
+        save_json_action.setShortcut("Ctrl+S")
+        toolbar.addAction(save_json_action)
+
+        load_json_action = QAction("Load JSON", self)
+        load_json_action.triggered.connect(self.load_json)
+        load_json_action.setShortcut("Ctrl+O")
+        toolbar.addAction(load_json_action)
 
         load_pdf_action = QAction("Load PDF Document", self)
         load_pdf_action.triggered.connect(self.load_pdf_document)
@@ -1214,6 +1213,16 @@ class MainWindow(QMainWindow):
         session_dashboard_action = QAction("Session Dashboard", self)
         session_dashboard_action.triggered.connect(self.toggle_session_dashboard)
         toolbar.addAction(session_dashboard_action)
+
+        # New "Save Session" button to let user choose a file name to save current session data.
+        save_session_action = QAction("Save Session", self)
+        save_session_action.triggered.connect(self.save_session_data)
+        toolbar.addAction(save_session_action)
+
+        # New "Load Session" button to let user choose a saved file to load.
+        load_session_action = QAction("Load Session", self)
+        load_session_action.triggered.connect(self.load_session_data)
+        toolbar.addAction(load_session_action)
 
         self.session_selector = QComboBox()
         self.session_selector.addItem("Combined View", None)
@@ -1446,24 +1455,28 @@ class MainWindow(QMainWindow):
             self.data_view_widget.refresh_data()
             print("Graph loaded from", filename)
 
-    # ----- Persistence functions -----
-    def save_persistent_data(self):
-        sessions_data = {key: gm.to_dict() for key, gm in self.sessions.items()}
-        persistent_data = {
-            "session_history": self.session_history,
-            "sessions": sessions_data,
-            "last_active_session": self.active_session_key
-        }
-        with open(self.PERSISTENCE_FILE, "w") as f:
-            json.dump(persistent_data, f, indent=4)
-        print("Persistent data saved.")
+    # ----- Persistence functions (manual save/load) -----
+    def save_session_data(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "Save Session Data", "", "JSON Files (*.json)")
+        if filename:
+            sessions_data = {key: gm.to_dict() for key, gm in self.sessions.items()}
+            persistent_data = {
+                "session_history": self.session_history,
+                "sessions": sessions_data,
+                "last_active_session": self.active_session_key
+            }
+            with open(filename, "w") as f:
+                json.dump(persistent_data, f, indent=4)
+            print("Session data saved to", filename)
 
-    def load_persistent_data(self):
-        if os.path.exists(self.PERSISTENCE_FILE):
-            with open(self.PERSISTENCE_FILE, "r") as f:
+    def load_session_data(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "Load Session Data", "", "JSON Files (*.json)")
+        if filename:
+            with open(filename, "r") as f:
                 data = json.load(f)
             self.session_history = data.get("session_history", {})
             sessions_data = data.get("sessions", {})
+            self.sessions.clear()
             for key, session_dict in sessions_data.items():
                 gm = GraphManager()
                 gm.load_from_dict(session_dict)
@@ -1474,7 +1487,6 @@ class MainWindow(QMainWindow):
                 self.active_graph_manager = self.sessions[last_active]
             else:
                 self.active_session_key = None
-            # Update the session selector
             self.session_selector.clear()
             self.session_selector.addItem("Combined View", None)
             for key in self.sessions:
@@ -1484,10 +1496,10 @@ class MainWindow(QMainWindow):
                 if index != -1:
                     self.session_selector.setCurrentIndex(index)
             self.refresh_editor_view()
-            print("Persistent data loaded.")
+            print("Session data loaded from", filename)
 
     def closeEvent(self, event):
-        self.save_persistent_data()
+        # No auto-save on exit; user must click "Save Session" explicitly.
         event.accept()
 
 # =============================================================================
