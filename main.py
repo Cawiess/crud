@@ -858,7 +858,6 @@ class ObjectFormWidget(QWidget):
         self.form_layout = QFormLayout()
         self.layout.addLayout(self.form_layout)
         
-        # Updated templates: all fields now use QLineEdit.
         self.templates = {
             "Car": {
                 "License Plate": QLineEdit,
@@ -1125,10 +1124,13 @@ class EditorWidget(QWidget):
             main_window.update_data_view()
 
 # =============================================================================
-# MainWindow: Manages sessions, bulk PDF import, export, annotation mode, and session dashboard.
+# MainWindow: Manages sessions, persistent storage, bulk PDF import,
+# annotation mode, and session dashboard.
 # =============================================================================
 
 class MainWindow(QMainWindow):
+    PERSISTENCE_FILE = "persistent_data.json"  # saved next to main.py
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Social Network Graph Editor")
@@ -1154,6 +1156,9 @@ class MainWindow(QMainWindow):
         self.create_toolbar()
         self.create_annotation_dock()
         self.create_global_shortcuts()
+
+        # Attempt to load persistent sessions from file
+        self.load_persistent_data()
 
     def create_toolbar(self):
         toolbar = QToolBar("Main Toolbar", self)
@@ -1440,6 +1445,50 @@ class MainWindow(QMainWindow):
             self.data_view_widget.set_graph_manager(new_default)
             self.data_view_widget.refresh_data()
             print("Graph loaded from", filename)
+
+    # ----- Persistence functions -----
+    def save_persistent_data(self):
+        sessions_data = {key: gm.to_dict() for key, gm in self.sessions.items()}
+        persistent_data = {
+            "session_history": self.session_history,
+            "sessions": sessions_data,
+            "last_active_session": self.active_session_key
+        }
+        with open(self.PERSISTENCE_FILE, "w") as f:
+            json.dump(persistent_data, f, indent=4)
+        print("Persistent data saved.")
+
+    def load_persistent_data(self):
+        if os.path.exists(self.PERSISTENCE_FILE):
+            with open(self.PERSISTENCE_FILE, "r") as f:
+                data = json.load(f)
+            self.session_history = data.get("session_history", {})
+            sessions_data = data.get("sessions", {})
+            for key, session_dict in sessions_data.items():
+                gm = GraphManager()
+                gm.load_from_dict(session_dict)
+                self.sessions[key] = gm
+            last_active = data.get("last_active_session", None)
+            if last_active in self.sessions:
+                self.active_session_key = last_active
+                self.active_graph_manager = self.sessions[last_active]
+            else:
+                self.active_session_key = None
+            # Update the session selector
+            self.session_selector.clear()
+            self.session_selector.addItem("Combined View", None)
+            for key in self.sessions:
+                self.session_selector.addItem(f"Session: {key}", key)
+            if self.active_session_key:
+                index = self.session_selector.findData(self.active_session_key)
+                if index != -1:
+                    self.session_selector.setCurrentIndex(index)
+            self.refresh_editor_view()
+            print("Persistent data loaded.")
+
+    def closeEvent(self, event):
+        self.save_persistent_data()
+        event.accept()
 
 # =============================================================================
 # Dark Palette and Global Style Sheet

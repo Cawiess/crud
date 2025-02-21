@@ -1,0 +1,77 @@
+{
+    "session_history": {
+        "Cooking_Class.pdf": {
+            "doc_id": "Cooking_Class.pdf",
+            "filename": "C:/Users/Calle/Desktop/test_documents\\Cooking_Class.pdf",
+            "loaded": "2025-02-21T11:23:07.761518",
+            "num_persons": 3
+        },
+        "Hiking_Adventure.pdf": {
+            "doc_id": "Hiking_Adventure.pdf",
+            "filename": "C:/Users/Calle/Desktop/test_documents\\Hiking_Adventure.pdf",
+            "loaded": "2025-02-21T11:23:07.766519",
+            "num_persons": 3
+        }
+    },
+    "sessions": {
+        "Cooking_Class.pdf": {
+            "nodes": [
+                {
+                    "id": "197512251111",
+                    "metadata": {},
+                    "first_name": "Carol",
+                    "last_name": "Taylor",
+                    "is_unknown": false,
+                    "type": "PersonNode"
+                },
+                {
+                    "id": "198001012222",
+                    "metadata": {},
+                    "first_name": "David",
+                    "last_name": "Brown",
+                    "is_unknown": false,
+                    "type": "PersonNode"
+                },
+                {
+                    "id": "199505053333",
+                    "metadata": {},
+                    "first_name": "Eve",
+                    "last_name": "Davis",
+                    "is_unknown": false,
+                    "type": "PersonNode"
+                }
+            ],
+            "edges": []
+        },
+        "Hiking_Adventure.pdf": {
+            "nodes": [
+                {
+                    "id": "198604080351",
+                    "metadata": {},
+                    "first_name": "Alice",
+                    "last_name": "Smith",
+                    "is_unknown": false,
+                    "type": "PersonNode"
+                },
+                {
+                    "id": "199003036114",
+                    "metadata": {},
+                    "first_name": "Bob",
+                    "last_name": "Jones",
+                    "is_unknown": false,
+                    "type": "PersonNode"
+                },
+                {
+                    "id": "198808086666",
+                    "metadata": {},
+                    "first_name": "Hank",
+                    "last_name": "Moore",
+                    "is_unknown": false,
+                    "type": "PersonNode"
+                }
+            ],
+            "edges": []
+        }
+    },
+    "last_active_session": null
+}
