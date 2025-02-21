@@ -240,7 +240,7 @@ class AnnotationHighlighter(QSyntaxHighlighter):
         sel_end = min(self.selection_end, block_end)
         if sel_start < sel_end:
             fmt = QTextCharFormat()
-            fmt.setBackground(QColor("#ADD8E6"))  # gentle light-blue
+            fmt.setBackground(QColor("#ADD8E6"))
             fmt.setFontWeight(QFont.Bold)
             fmt.setFontPointSize(self.default_font_size + 2)
             self.setFormat(sel_start - block_start, sel_end - sel_start, fmt)
@@ -647,10 +647,10 @@ class GraphWidget(QGraphicsView):
         pos = self.mapToScene(event.pos())
         item = self.scene().itemAt(pos, self.transform())
         if event.button() == Qt.LeftButton and (event.modifiers() & Qt.ControlModifier):
-            selected_items = [it for it in self.scene().selectedItems() if isinstance(it, NodeItem) and it.node.type == "PersonNode"]
+            selected_items = [it for it in self.scene().selectedItems() if isinstance(it, NodeItem)]
             if selected_items:
                 self.edge_creation_sources = selected_items
-            elif isinstance(item, NodeItem) and item.node.type == "PersonNode":
+            elif isinstance(item, NodeItem):
                 self.edge_creation_sources = [item]
             else:
                 self.edge_creation_sources = []
@@ -852,7 +852,7 @@ class PersonFormWidget(QWidget):
             print(e)
 
 # =============================================================================
-# ObjectFormWidget with Predefined Templates and Aligned Fields
+# ObjectFormWidget with Predefined Templates, QLineEdits, and Updated Tab Order
 # =============================================================================
 
 class ObjectFormWidget(QWidget):
@@ -866,28 +866,34 @@ class ObjectFormWidget(QWidget):
         self.form_layout = QFormLayout()
         self.layout.addLayout(self.form_layout)
         
-        # Predefined templates with field definitions.
+        # Updated templates: all fields now use QLineEdit.
         self.templates = {
             "Car": {
                 "License Plate": QLineEdit,
                 "Model": QLineEdit,
-                "Year": QSpinBox,
+                "Year": QLineEdit,
             },
             "Product": {
-                "Quantity": QSpinBox,
-                "Price": QDoubleSpinBox,
+                "Quantity": QLineEdit,
+                "Price": QLineEdit,
             }
         }
         self.current_template = None
         self.template_widgets = {}
+        self.template_widgets_order = []  # to maintain the order of dynamic fields
         
         self.desc_edit = QLineEdit()
         self.form_layout.addRow("Description:", self.desc_edit)
+        # Allow pressing Enter in the description field to add the object
+        self.desc_edit.returnPressed.connect(self.add_object)
         self.desc_edit.textChanged.connect(self.check_template)
         
         self.submit_btn = QPushButton("Add Object")
         self.submit_btn.clicked.connect(self.add_object)
         self.layout.addWidget(self.submit_btn)
+        
+        # Set initial tab order: description -> submit button
+        QWidget.setTabOrder(self.desc_edit, self.submit_btn)
     
     def check_template(self, text):
         text = text.strip()
@@ -895,24 +901,36 @@ class ObjectFormWidget(QWidget):
             if self.current_template != text:
                 self.clear_template_fields()
                 self.current_template = text
+                self.template_widgets_order = []
                 for label, widget_class in self.templates[text].items():
                     widget = widget_class()
-                    if isinstance(widget, QSpinBox):
-                        widget.setMinimum(0)
-                    if isinstance(widget, QDoubleSpinBox):
-                        widget.setMinimum(0)
-                        widget.setDecimals(2)
+                    widget.returnPressed.connect(self.add_object)
                     self.form_layout.addRow(label + ":", widget)
                     self.template_widgets[label] = widget
+                    self.template_widgets_order.append(widget)
+                self.update_tab_order()
         else:
             if self.current_template is not None:
                 self.clear_template_fields()
                 self.current_template = None
+                self.update_tab_order()
+    
+    def update_tab_order(self):
+        # Set tab order: description -> dynamic fields (if any) -> submit button.
+        if self.template_widgets_order:
+            previous = self.desc_edit
+            for widget in self.template_widgets_order:
+                QWidget.setTabOrder(previous, widget)
+                previous = widget
+            QWidget.setTabOrder(previous, self.submit_btn)
+        else:
+            QWidget.setTabOrder(self.desc_edit, self.submit_btn)
     
     def clear_template_fields(self):
         for label, widget in list(self.template_widgets.items()):
             self.remove_row_containing_widget(widget)
         self.template_widgets = {}
+        self.template_widgets_order = []
     
     def remove_row_containing_widget(self, widget):
         row_count = self.form_layout.rowCount()
@@ -928,10 +946,7 @@ class ObjectFormWidget(QWidget):
         if self.current_template:
             fields_data = {}
             for label, widget in self.template_widgets.items():
-                if isinstance(widget, QLineEdit):
-                    fields_data[label] = widget.text().strip()
-                elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
-                    fields_data[label] = widget.value()
+                fields_data[label] = widget.text().strip()
             metadata = {"template": self.current_template, "fields": fields_data}
         try:
             self.graph_widget.record_state()
@@ -940,6 +955,7 @@ class ObjectFormWidget(QWidget):
             self.desc_edit.clear()
             self.clear_template_fields()
             self.current_template = None
+            self.update_tab_order()
         except ValueError as e:
             print(e)
 
@@ -1304,14 +1320,12 @@ class MainWindow(QMainWindow):
                     existing_data = json.load(f)
             else:
                 existing_data = {"nodes": [], "edges": []}
-            # Build a set of document_ids already in the existing file
             existing_doc_ids = set()
             for node in existing_data.get("nodes", []):
                 md = node.get("metadata", {})
                 doc_id = md.get("document_id")
                 if doc_id:
                     existing_doc_ids.add(doc_id)
-            # Filter new nodes: if node's metadata contains a document_id already in existing_doc_ids, skip it.
             filtered_new_nodes = []
             for node in new_data.get("nodes", []):
                 md = node.get("metadata", {})
@@ -1324,7 +1338,6 @@ class MainWindow(QMainWindow):
                     if not any(existing_node["id"] == node["id"] for existing_node in existing_data.get("nodes", [])):
                         filtered_new_nodes.append(node)
             merged_nodes = existing_data.get("nodes", []) + filtered_new_nodes
-            # Merge edges without duplication (based on node_a_id, node_b_id, description)
             existing_edges = existing_data.get("edges", [])
             edge_keys = set()
             for edge in existing_edges:
@@ -1405,3 +1418,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+    
