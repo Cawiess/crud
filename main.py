@@ -5,6 +5,7 @@ import uuid
 import math
 import copy
 import re
+import datetime
 import PyPDF2
 
 from dataclasses import dataclass, asdict, field, fields
@@ -16,7 +17,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QWidget, QFormLayout, QPushButton, QLineEdit,
     QLabel, QComboBox, QFileDialog, QToolBar, QAction, QTabWidget, QTextEdit,
     QInputDialog, QDialog, QGroupBox, QShortcut, QMessageBox, QCheckBox, QDockWidget, QPlainTextEdit,
-    QSpinBox, QDoubleSpinBox
+    QSpinBox, QDoubleSpinBox, QTableWidget, QTableWidgetItem
 )
 from PyQt5.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QPalette, QFont,
@@ -221,7 +222,7 @@ class GraphManager:
                 self.nodes[edge.node_b_id].edges.append(edge)
 
 # =============================================================================
-# AnnotationHighlighter: Custom highlighter to format selected text.
+# AnnotationHighlighter and AnnotationTextEdit
 # =============================================================================
 
 class AnnotationHighlighter(QSyntaxHighlighter):
@@ -244,10 +245,6 @@ class AnnotationHighlighter(QSyntaxHighlighter):
             fmt.setFontWeight(QFont.Bold)
             fmt.setFontPointSize(self.default_font_size + 2)
             self.setFormat(sel_start - block_start, sel_end - sel_start, fmt)
-
-# =============================================================================
-# AnnotationTextEdit: Subclass of QTextEdit that uses AnnotationHighlighter.
-# =============================================================================
 
 class AnnotationTextEdit(QTextEdit):
     def __init__(self, *args, **kwargs):
@@ -851,17 +848,12 @@ class PersonFormWidget(QWidget):
         except ValueError as e:
             print(e)
 
-# =============================================================================
-# ObjectFormWidget with Predefined Templates, QLineEdits, and Updated Tab Order
-# =============================================================================
-
 class ObjectFormWidget(QWidget):
     def __init__(self, graph_manager: GraphManager, graph_widget: GraphWidget, parent=None):
         super().__init__(parent)
         self.graph_manager = graph_manager
         self.graph_widget = graph_widget
         
-        # Use a single QFormLayout so that the "Description:" row and dynamic template rows align.
         self.layout = QVBoxLayout(self)
         self.form_layout = QFormLayout()
         self.layout.addLayout(self.form_layout)
@@ -880,11 +872,10 @@ class ObjectFormWidget(QWidget):
         }
         self.current_template = None
         self.template_widgets = {}
-        self.template_widgets_order = []  # to maintain the order of dynamic fields
+        self.template_widgets_order = []
         
         self.desc_edit = QLineEdit()
         self.form_layout.addRow("Description:", self.desc_edit)
-        # Allow pressing Enter in the description field to add the object
         self.desc_edit.returnPressed.connect(self.add_object)
         self.desc_edit.textChanged.connect(self.check_template)
         
@@ -892,7 +883,6 @@ class ObjectFormWidget(QWidget):
         self.submit_btn.clicked.connect(self.add_object)
         self.layout.addWidget(self.submit_btn)
         
-        # Set initial tab order: description -> submit button
         QWidget.setTabOrder(self.desc_edit, self.submit_btn)
     
     def check_template(self, text):
@@ -916,7 +906,6 @@ class ObjectFormWidget(QWidget):
                 self.update_tab_order()
     
     def update_tab_order(self):
-        # Set tab order: description -> dynamic fields (if any) -> submit button.
         if self.template_widgets_order:
             previous = self.desc_edit
             for widget in self.template_widgets_order:
@@ -1042,6 +1031,37 @@ class DataViewWidget(QWidget):
             self.data_edit.setPlainText("No data available.")
 
 # =============================================================================
+# SessionDashboard: A separate window to view session history.
+# =============================================================================
+
+class SessionDashboard(QDialog):
+    def __init__(self, session_history, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Session Dashboard")
+        self.resize(600, 400)
+        self.session_history = session_history
+        layout = QVBoxLayout(self)
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Session Key", "Filename", "Loaded", "Persons"])
+        layout.addWidget(self.table)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn)
+        self.refresh_table()
+
+    def refresh_table(self):
+        self.table.setRowCount(0)
+        for key, info in self.session_history.items():
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(key))
+            self.table.setItem(row, 1, QTableWidgetItem(info.get("filename", "")))
+            self.table.setItem(row, 2, QTableWidgetItem(info.get("loaded", "")))
+            self.table.setItem(row, 3, QTableWidgetItem(str(info.get("num_persons", 0))))
+        self.table.resizeColumnsToContents()
+
+# =============================================================================
 # EditorWidget: Combines the form widgets and the graph view.
 # =============================================================================
 
@@ -1105,7 +1125,7 @@ class EditorWidget(QWidget):
             main_window.update_data_view()
 
 # =============================================================================
-# MainWindow: Manages sessions, session selector, export, and annotation mode.
+# MainWindow: Manages sessions, bulk PDF import, export, annotation mode, and session dashboard.
 # =============================================================================
 
 class MainWindow(QMainWindow):
@@ -1115,6 +1135,7 @@ class MainWindow(QMainWindow):
         self.sessions: Dict[str, GraphManager] = {}
         self.active_session_key: Optional[str] = None
         self.active_graph_manager = GraphManager()
+        self.session_history: Dict[str, Dict[str, Any]] = {}  # holds session metadata
 
         self.graph_widget = GraphWidget()
         self.graph_widget.refresh(self.active_graph_manager)
@@ -1127,6 +1148,8 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.editor_widget, "Editor")
         self.tab_widget.addTab(self.data_view_widget, "Data")
         self.setCentralWidget(self.tab_widget)
+
+        self.session_dashboard = None  # session dashboard window
 
         self.create_toolbar()
         self.create_annotation_dock()
@@ -1170,6 +1193,10 @@ class MainWindow(QMainWindow):
         load_pdf_action.setShortcut("Ctrl+P")
         toolbar.addAction(load_pdf_action)
 
+        bulk_load_action = QAction("Bulk Load PDFs", self)
+        bulk_load_action.triggered.connect(self.bulk_load_pdf_documents)
+        toolbar.addAction(bulk_load_action)
+
         layout_action = QAction("Force Layout", self)
         layout_action.triggered.connect(self.graph_widget.organize_layout)
         toolbar.addAction(layout_action)
@@ -1178,6 +1205,10 @@ class MainWindow(QMainWindow):
         self.toggle_annotation_action.setCheckable(True)
         self.toggle_annotation_action.triggered.connect(self.toggle_annotation_mode)
         toolbar.addAction(self.toggle_annotation_action)
+
+        session_dashboard_action = QAction("Session Dashboard", self)
+        session_dashboard_action.triggered.connect(self.toggle_session_dashboard)
+        toolbar.addAction(session_dashboard_action)
 
         self.session_selector = QComboBox()
         self.session_selector.addItem("Combined View", None)
@@ -1209,6 +1240,17 @@ class MainWindow(QMainWindow):
         else:
             self.annotationDock.hide()
 
+    def toggle_session_dashboard(self):
+        if self.session_dashboard is None:
+            self.session_dashboard = SessionDashboard(self.session_history, self)
+            self.session_dashboard.show()
+        else:
+            if self.session_dashboard.isVisible():
+                self.session_dashboard.hide()
+            else:
+                self.session_dashboard.refresh_table()
+                self.session_dashboard.show()
+
     def create_global_shortcuts(self):
         QShortcut(QKeySequence("Ctrl+F"), self, activated=lambda: self.search_edit.setFocus())
         QShortcut(QKeySequence("Ctrl+E"), self, activated=lambda: self.tab_widget.setCurrentWidget(self.editor_widget))
@@ -1218,6 +1260,23 @@ class MainWindow(QMainWindow):
         pdf_filename, _ = QFileDialog.getOpenFileName(self, "Load PDF Document", "", "PDF Files (*.pdf)")
         if not pdf_filename:
             return
+        self.process_pdf_file(pdf_filename)
+
+    def bulk_load_pdf_documents(self):
+        directory = QFileDialog.getExistingDirectory(self, "Select Directory Containing PDFs", "")
+        if not directory:
+            return
+        pdf_files = [os.path.join(directory, f) for f in os.listdir(directory) if f.lower().endswith(".pdf")]
+        if not pdf_files:
+            QMessageBox.information(self, "No PDFs Found", "No PDF files found in the selected directory.")
+            return
+        count = 0
+        for pdf_file in pdf_files:
+            self.process_pdf_file(pdf_file)
+            count += 1
+        QMessageBox.information(self, "Bulk Load Complete", f"Successfully loaded {count} PDF document(s).")
+
+    def process_pdf_file(self, pdf_filename):
         doc_handler = DocumentHandler(pdf_filename)
         persons = doc_handler.get_persons()
         doc_id = doc_handler.get_document_id()
@@ -1236,12 +1295,19 @@ class MainWindow(QMainWindow):
             new_session.create_person(person["id"], person["first_name"], person["last_name"])
         session_key = doc_id
         self.sessions[session_key] = new_session
+        timestamp = datetime.datetime.now().isoformat()
+        self.session_history[session_key] = {
+            "doc_id": doc_id,
+            "filename": pdf_filename,
+            "loaded": timestamp,
+            "num_persons": len(persons)
+        }
         self.session_selector.addItem(f"Session: {doc_id}", session_key)
         self.session_selector.setCurrentIndex(self.session_selector.count() - 1)
         self.active_session_key = session_key
         self.active_graph_manager = new_session
         self.refresh_editor_view()
-        print(f"PDF Document '{pdf_filename}' loaded as session '{doc_id}'. Metadata applied: {metadata}")
+        print(f"Loaded PDF '{pdf_filename}' as session '{doc_id}'.")
 
     def session_changed(self, index):
         session_key = self.session_selector.itemData(index)
@@ -1267,6 +1333,8 @@ class MainWindow(QMainWindow):
         self.graph_widget.refresh(self.active_graph_manager)
         self.annotationTextEdit.setPlainText(self.active_graph_manager.source_text)
         self.update_data_view()
+        if self.session_dashboard is not None and self.session_dashboard.isVisible():
+            self.session_dashboard.refresh_table()
 
     def set_forms_enabled(self, enabled: bool):
         self.editor_widget.activity_form.setEnabled(enabled)
@@ -1418,4 +1486,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-    
